@@ -1722,7 +1722,7 @@ if __name__ == '__main__':
 
         elif args.commandName == 'generate-verification-profiles':
             base_path = os.getcwd()
-            remote_input_path = '{}/build-input/remote-input'.format(base_path
+            remote_input_path = '{}/build-input/remote-input'.format(base_path)
 
             if os.path.exists(remote_input_path):
                 shutil.rmtree(remote_input_path)
@@ -1768,10 +1768,14 @@ if __name__ == '__main__':
                 darwin_containers_path=args.darwinContainers,
                 darwin_containers_host=args.darwinContainersHost,
                 macos_version=versions.macos_version,
-                ipa_path=args.ipa,
-                dsyms_path=args.dsyms,
-                username=env['APPSTORE_CONNECT_USERNAME'],
-                password=env['APPSTORE_CONNECT_PASSWORD']
+                bazel_cache_host=args.cacheHost,
+                configuration=args.configuration,
+                build_input_data_path=remote_input_path,
+                embed_watch_app=args.embedWatchApp,
+                watch_api_id=args.watchApiId,
+                watch_api_hash=args.watchApiHash,
+                watch_signing_identity=args.watchSigningIdentity,
+                watch_provisioning_profile_remote_path=watch_provisioning_profile_remote_path
             )
 
         elif args.commandName == 'remote-ipa-diff':
