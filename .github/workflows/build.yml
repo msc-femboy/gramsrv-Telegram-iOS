@@ -15,7 +15,23 @@ jobs:
         with:
           submodules: 'recursive'
           fetch-depth: '0'
+      - name: Fix Make.py
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
 
+          p = Path("build-system/Make/Make.py")
+          s = p.read_text()
+
+          s = s.replace(
+              "remote_input_path = '{}/build-input/remote-input'.format(base_path",
+              "remote_input_path = '{}/build-input/remote-input'.format(base_path)"
+          )
+
+          p.write_text(s)
+          PY
+
+          python3 -m py_compile build-system/Make/Make.py
       - name: Set active Xcode path
         run: |
           XCODE_VERSION=$(cat versions.json | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["xcode"]);')
