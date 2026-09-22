@@ -1,4 +1,4 @@
-name: CI
+name: Build 100Gramm iOS
 
 on:
   push:
@@ -11,72 +11,31 @@ jobs:
     runs-on: macos-15
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Fix Make.py syntax
+      - name: Select Xcode
         run: |
-          set -e
-
-          python3 -c "from pathlib import Path; p=Path('build-system/Make/Make.py'); s=p.read_text(); s=s.replace(\"remote_input_path = '{}/build-input/remote-input'.format(base_path))\", \"remote_input_path = '{}/build-input/remote-input'.format(base_path)\"); s=s.replace(\"remote_input_path = '{}/build-input/remote-input'.format(base_path\", \"remote_input_path = '{}/build-input/remote-input'.format(base_path)\"); p.write_text(s)"
-
-          python3 -m py_compile build-system/Make/Make.py
-
-          echo "Make.py syntax OK"
-
-      - name: Set active Xcode path
-        run: |
-          set -e
-
-          XCODE_VERSION=$(python3 -c 'import json; print(json.load(open("versions.json"))["xcode"])')
-
-          echo "Using Xcode $XCODE_VERSION"
-
-          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
-
+          sudo xcode-select -s /Applications/Xcode.app
           xcodebuild -version
 
-      - name: Create canonical source directory
+      - name: Setup Python
         run: |
-          set -e
+          python3 --version
 
-          sudo mkdir -p /Users/Shared
-
-          cp -R "$GITHUB_WORKSPACE" /Users/Shared/
-
-          mv "/Users/Shared/$(basename "$GITHUB_WORKSPACE")" /Users/Shared/telegram-ios
-
-      - name: Build the App
+      - name: Check Make.py syntax
         run: |
-          set -e
-          set -x
-
-          SOURCE_DIR="/Users/Shared/telegram-ios"
-          BAZEL_USER_ROOT="/private/var/tmp/_bazel_containerhost"
-
-          cd "$SOURCE_DIR"
-
-          BUILD_NUMBER_OFFSET="$(cat build_number_offset)"
-
-          APP_VERSION="$(python3 -c 'import json; print(json.load(open("versions.json"))["app"])')"
-
-          COMMIT_COUNT="$(git rev-list --count HEAD)"
-          COMMIT_COUNT="$((COMMIT_COUNT + BUILD_NUMBER_OFFSET))"
-          BUILD_NUMBER="$COMMIT_COUNT"
-
-          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
-          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
-
-          echo "APP_VERSION=$APP_VERSION"
-          echo "BUILD_NUMBER=$BUILD_NUMBER"
-
-          python3 build-system/Make/ImportCertificates.py \
-            --path build-system/fake-codesigning/certs
-
           python3 -m py_compile build-system/Make/Make.py
+
+      - name: Build unsigned IPA
+        env:
+          BAZEL_USER_ROOT: ${{ runner.temp }}/bazel
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          mkdir -p "$BAZEL_USER_ROOT"
 
           python3 -u build-system/Make/Make.py \
             --bazelUserRoot="$BAZEL_USER_ROOT" \
@@ -87,77 +46,28 @@ jobs:
             --configuration=release_arm64 \
             --buildNumber="$BUILD_NUMBER"
 
-          OUTPUT_PATH="build/artifacts"
+      - name: Find IPA
+        run: |
+          echo "Searching for IPA..."
+          find bazel-out -type f -name "*.ipa" -print
 
-          rm -rf "$OUTPUT_PATH"
-          mkdir -p "$OUTPUT_PATH"
+      - name: Find DSYM
+        run: |
+          echo "Searching for dSYM..."
+          find bazel-out -type d -name "*.app.dSYM" -print
 
-          FOUND_IPA=0
-
-          for f in bazel-out/applebin_ios-ios_arm*-opt-ST-*/bin/Telegram/Telegram.ipa; do
-            if [ -f "$f" ]; then
-              cp "$f" "$OUTPUT_PATH/100Gramm.ipa"
-              FOUND_IPA=1
-            fi
-          done
-
-          if [ "$FOUND_IPA" -eq 0 ]; then
-            echo "ERROR: IPA was not found"
-            find bazel-out -name "*.ipa" -print || true
-            exit 1
-          fi
-
-          mkdir -p build/DSYMs
-
-          for f in bazel-out/applebin_ios-ios_arm*-opt-ST-*/bin/Telegram/*.dSYM; do
-            if [ -d "$f" ]; then
-              cp -R "$f" build/DSYMs/
-            fi
-          done
-
-          zip -r \
-            "$OUTPUT_PATH/100Gramm.DSYMs.zip" \
-            build/DSYMs \
-            >/dev/null
-
-          echo "Build artifacts:"
-          ls -lh "$OUTPUT_PATH"
-
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: build-${{ env.BUILD_NUMBER }}
-          release_name: 100Gramm ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }})
-          body: |
-            An unsigned build of 100Gramm for iOS ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }}).
+          name: 100Gramm-iOS-${{ github.run_number }}
+          path: |
+            bazel-out/**/Telegram.ipa
+          if-no-files-found: error
 
-            Bundle ID: org.100gramm.ios
-
-            Push Notifications entitlement: development
-          draft: false
-          prerelease: false
-
-      - name: Upload Release IPA
-        id: upload-release-ipa
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload dSYM
+        uses: actions/upload-artifact@v4
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: /Users/Shared/telegram-ios/build/artifacts/100Gramm.ipa
-          asset_name: 100Gramm.ipa
-          asset_content_type: application/zip
-
-      - name: Upload Release DSYM
-        id: upload-release-dsym
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: /Users/Shared/telegram-ios/build/artifacts/100Gramm.DSYMs.zip
-          asset_name: 100Gramm.DSYMs.zip
-          asset_content_type: application/zip
+          name: 100Gramm-dSYM-${{ github.run_number }}
+          path: |
+            bazel-out/**/*.app.dSYM/**
+          if-no-files-found: warn
