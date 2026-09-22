@@ -26,75 +26,93 @@ jobs:
           p = Path("build-system/Make/Make.py")
           s = p.read_text()
 
-          # Fix broken .format(base_path
-          s = s.replace(
-              "remote_input_path = '{}/build-input/remote-input'.format(base_path",
-              "remote_input_path = '{}/build-input/remote-input'.format(base_path)"
-          )
+          # ---------------------------------------------------------
+          # 1. Fix remote_input_path syntax.
+          # ---------------------------------------------------------
 
-          # Allow unsigned builds to use a development APNs entitlement
+          bad1 = "remote_input_path = '{}/build-input/remote-input'.format(base_path))"
+          bad2 = "remote_input_path = '{}/build-input/remote-input'.format(base_path"
+
+          good = "remote_input_path = '{}/build-input/remote-input'.format(base_path)"
+
+          s = s.replace(bad1, good)
+          s = s.replace(bad2, good)
+
+          # ---------------------------------------------------------
+          # 2. Allow unsigned builds to use development APNs
+          #    entitlement when provisioning profiles are disabled.
+          # ---------------------------------------------------------
+
           old = """    if codesigning_data.aps_environment is None:
-              print('Could not find a valid aps-environment entitlement in the provided provisioning profiles')
-              sys.exit(1)
-          """
+        print('Could not find a valid aps-environment entitlement in the provided provisioning profiles')
+        sys.exit(1)
+"""
 
           new = """    if codesigning_data.aps_environment is None:
-              if getattr(arguments, 'disableProvisioningProfiles', False):
-                  codesigning_data.aps_environment = 'development'
-              else:
-                  print('Could not find a valid aps-environment entitlement in the provided provisioning profiles')
-                  sys.exit(1)
-          """
+        if getattr(arguments, 'disableProvisioningProfiles', False):
+            codesigning_data.aps_environment = 'development'
+        else:
+            print('Could not find a valid aps-environment entitlement in the provided provisioning profiles')
+            sys.exit(1)
+"""
 
           if old in s:
               s = s.replace(old, new, 1)
-          elif "codesigning_data.aps_environment = 'development'" not in s:
-              raise SystemExit("Could not find resolve_configuration() APS block")
 
-          # Enable the Bazel flag for unsigned builds
+          # ---------------------------------------------------------
+          # 3. Enable disableProvisioningProfiles in build().
+          # ---------------------------------------------------------
+
           old = """    bazel_command_line.set_enable_sandbox(arguments.sandbox)
-          bazel_command_line.set_profile_swift(arguments.profileSwift)
-          """
+    bazel_command_line.set_profile_swift(arguments.profileSwift)
+"""
 
           new = """    bazel_command_line.set_enable_sandbox(arguments.sandbox)
 
-          if arguments.disableProvisioningProfiles:
-              bazel_command_line.set_disable_provisioning_profiles()
+    if arguments.disableProvisioningProfiles:
+        bazel_command_line.set_disable_provisioning_profiles()
 
-          bazel_command_line.set_profile_swift(arguments.profileSwift)
-          """
+    bazel_command_line.set_profile_swift(arguments.profileSwift)
+"""
 
           if old in s:
               s = s.replace(old, new, 1)
-          elif "bazel_command_line.set_disable_provisioning_profiles()" not in s:
-              raise SystemExit("Could not find build() Bazel configuration block")
 
-          # Add --disableProvisioningProfiles to the build parser
+          # ---------------------------------------------------------
+          # 4. Add --disableProvisioningProfiles to the build parser.
+          # ---------------------------------------------------------
+
           if "--disableProvisioningProfiles" not in s:
+
               marker = """    buildParser.add_argument(
-              '--configuration',
-          """
+        '--configuration',
+"""
 
               pos = s.find(marker)
 
               if pos == -1:
-                  raise SystemExit("Could not find buildParser --configuration argument")
+                  raise SystemExit(
+                      "ERROR: Could not find buildParser --configuration argument"
+                  )
 
               end = s.find("\n    )", pos)
 
               if end == -1:
-                  raise SystemExit("Could not find end of --configuration argument")
+                  raise SystemExit(
+                      "ERROR: Could not find end of --configuration argument"
+                  )
 
               end += len("\n    )")
 
               argument = """
 
-          buildParser.add_argument(
-              '--disableProvisioningProfiles',
-              action='store_true',
-              default=False,
-              help='Build without provisioning profiles.'
-          )"""
+    buildParser.add_argument(
+        '--disableProvisioningProfiles',
+        action='store_true',
+        default=False,
+        help='Build without provisioning profiles.'
+    )
+"""
 
               s = s[:end] + argument + s[end:]
 
@@ -103,42 +121,75 @@ jobs:
           print("Make.py patched successfully")
           PY
 
+          # Make sure Python syntax is valid before continuing.
           python3 -m py_compile build-system/Make/Make.py
+
+          echo "Make.py syntax OK"
 
       - name: Set active Xcode path
         run: |
+          set -e
+
           XCODE_VERSION=$(cat versions.json | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["xcode"]);')
+
+          echo "Using Xcode: $XCODE_VERSION"
+
           sudo xcode-select -s /Applications/Xcode_$XCODE_VERSION.app/Contents/Developer
+
+          xcodebuild -version
 
       - name: Create canonical source directory
         run: |
+          set -e
           set -x
+
           sudo mkdir -p /Users/Shared
+
           cp -R "$GITHUB_WORKSPACE" /Users/Shared/
-          mv /Users/Shared/$(basename "$GITHUB_WORKSPACE") /Users/Shared/telegram-ios
+
+          mv "/Users/Shared/$(basename "$GITHUB_WORKSPACE")" \
+             /Users/Shared/telegram-ios
 
       - name: Build the App
         run: |
+          set -e
           set -x
 
+          # Source code paths are included in the final binary,
+          # so we need to make them stable across builds.
           SOURCE_DIR=/Users/Shared/telegram-ios
+
+          # Use canonical Bazel root.
           BAZEL_USER_ROOT="/private/var/tmp/_bazel_containerhost"
 
           cd "$SOURCE_DIR"
 
           BUILD_NUMBER_OFFSET="$(cat build_number_offset)"
 
-          export APP_VERSION=$(cat versions.json | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["app"]);')
-          export COMMIT_COUNT=$(git rev-list --count HEAD)
-          export COMMIT_COUNT="$(($COMMIT_COUNT+$BUILD_NUMBER_OFFSET))"
+          export APP_VERSION="$(
+            cat versions.json |
+            python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["app"]);'
+          )"
+
+          export COMMIT_COUNT="$(git rev-list --count HEAD)"
+
+          export COMMIT_COUNT="$(
+            ($COMMIT_COUNT + $BUILD_NUMBER_OFFSET)
+          )"
+
           export BUILD_NUMBER="$COMMIT_COUNT"
 
           echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
 
+          echo "APP_VERSION=$APP_VERSION"
+          echo "BUILD_NUMBER=$BUILD_NUMBER"
+
+          # Import fake certificates used by the unsigned build.
           python3 build-system/Make/ImportCertificates.py \
             --path build-system/fake-codesigning/certs
 
+          # Build unsigned IPA.
           python3 -u build-system/Make/Make.py \
             --bazelUserRoot="$BAZEL_USER_ROOT" \
             build \
@@ -148,21 +199,51 @@ jobs:
             --configuration=release_arm64 \
             --buildNumber="$BUILD_NUMBER"
 
+          # ---------------------------------------------------------
+          # Collect IPA
+          # ---------------------------------------------------------
+
           OUTPUT_PATH="build/artifacts"
+
           rm -rf "$OUTPUT_PATH"
           mkdir -p "$OUTPUT_PATH"
 
+          FOUND_IPA=0
+
           for f in bazel-out/applebin_ios-ios_arm*-opt-ST-*/bin/Telegram/Telegram.ipa; do
-            cp "$f" "$OUTPUT_PATH/"
+            if [ -f "$f" ]; then
+              cp "$f" "$OUTPUT_PATH/100Gramm.ipa"
+              FOUND_IPA=1
+            fi
           done
+
+          if [ "$FOUND_IPA" -eq 0 ]; then
+            echo "ERROR: Telegram.ipa was not found"
+            exit 1
+          fi
+
+          echo "IPA:"
+          ls -lh "$OUTPUT_PATH/100Gramm.ipa"
+
+          # ---------------------------------------------------------
+          # Collect dSYM
+          # ---------------------------------------------------------
 
           mkdir -p build/DSYMs
 
           for f in bazel-out/applebin_ios-ios_arm*-opt-ST-*/bin/Telegram/*.dSYM; do
-            cp -R "$f" build/DSYMs/
+            if [ -d "$f" ]; then
+              cp -R "$f" build/DSYMs/
+            fi
           done
 
-          zip -r "./$OUTPUT_PATH/Telegram.DSYMs.zip" build/DSYMs 1>/dev/null
+          zip -r \
+            "./$OUTPUT_PATH/100Gramm.DSYMs.zip" \
+            build/DSYMs \
+            1>/dev/null
+
+          echo "Artifacts:"
+          ls -lh "$OUTPUT_PATH"
 
       - name: Create Release
         id: create_release
@@ -173,7 +254,11 @@ jobs:
           tag_name: build-${{ env.BUILD_NUMBER }}
           release_name: 100Gramm ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }})
           body: |
-            An unsigned build of 100Gramm for iOS ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }})
+            An unsigned build of 100Gramm for iOS ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }}).
+
+            Bundle ID: org.100gramm.ios
+
+            Push Notifications entitlement: development
           draft: false
           prerelease: false
 
@@ -184,7 +269,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa
+          asset_path: /Users/Shared/telegram-ios/build/artifacts/100Gramm.ipa
           asset_name: 100Gramm.ipa
           asset_content_type: application/zip
 
@@ -195,6 +280,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: /Users/Shared/telegram-ios/build/artifacts/Telegram.DSYMs.zip
+          asset_path: /Users/Shared/telegram-ios/build/artifacts/100Gramm.DSYMs.zip
           asset_name: 100Gramm.DSYMs.zip
           asset_content_type: application/zip
