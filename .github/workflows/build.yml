@@ -17,118 +17,29 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Fix Make.py
-        shell: bash
+      - name: Fix Make.py syntax
         run: |
           set -e
 
-          python3 -c "
-          from pathlib import Path
-
-          p = Path('build-system/Make/Make.py')
-          s = p.read_text()
-
-          # Fix remote_input_path
-          s = s.replace(
-              \"remote_input_path = '{}/build-input/remote-input'.format(base_path))\",
-              \"remote_input_path = '{}/build-input/remote-input'.format(base_path)\"
-          )
-
-          s = s.replace(
-              \"remote_input_path = '{}/build-input/remote-input'.format(base_path\",
-              \"remote_input_path = '{}/build-input/remote-input'.format(base_path)\"
-          )
-
-          # Fix APS environment for unsigned builds
-          old = '''    if codesigning_data.aps_environment is None:
-        print('Could not find a valid aps-environment entitlement in the provided provisioning profiles')
-        sys.exit(1)
-'''
-
-          new = '''    if codesigning_data.aps_environment is None:
-        if getattr(arguments, 'disableProvisioningProfiles', False):
-            codesigning_data.aps_environment = 'development'
-        else:
-            print('Could not find a valid aps-environment entitlement in the provided provisioning profiles')
-            sys.exit(1)
-'''
-
-          if old in s:
-              s = s.replace(old, new, 1)
-
-          # Enable disableProvisioningProfiles in build()
-          old = '''    bazel_command_line.set_enable_sandbox(arguments.sandbox)
-    bazel_command_line.set_profile_swift(arguments.profileSwift)
-'''
-
-          new = '''    bazel_command_line.set_enable_sandbox(arguments.sandbox)
-
-    if arguments.disableProvisioningProfiles:
-        bazel_command_line.set_disable_provisioning_profiles()
-
-    bazel_command_line.set_profile_swift(arguments.profileSwift)
-'''
-
-          if old in s:
-              s = s.replace(old, new, 1)
-
-          # Add CLI argument if it does not already exist
-          if '--disableProvisioningProfiles' not in s:
-              marker = '''    buildParser.add_argument(
-        '--configuration',
-'''
-
-              pos = s.find(marker)
-
-              if pos == -1:
-                  raise SystemExit(
-                      'Could not find buildParser configuration argument'
-                  )
-
-              end = s.find('\\n    )', pos)
-
-              if end == -1:
-                  raise SystemExit(
-                      'Could not find end of configuration argument'
-                  )
-
-              end += len('\\n    )')
-
-              argument = '''
-    
-    buildParser.add_argument(
-        '--disableProvisioningProfiles',
-        action='store_true',
-        default=False,
-        help='Build without provisioning profiles.'
-    )
-'''
-
-              s = s[:end] + argument + s[end:]
-
-          p.write_text(s)
-          print('Make.py patched successfully')
-          "
+          python3 -c "from pathlib import Path; p=Path('build-system/Make/Make.py'); s=p.read_text(); s=s.replace(\"remote_input_path = '{}/build-input/remote-input'.format(base_path))\", \"remote_input_path = '{}/build-input/remote-input'.format(base_path)\"); s=s.replace(\"remote_input_path = '{}/build-input/remote-input'.format(base_path\", \"remote_input_path = '{}/build-input/remote-input'.format(base_path)\"); p.write_text(s)"
 
           python3 -m py_compile build-system/Make/Make.py
 
           echo "Make.py syntax OK"
 
       - name: Set active Xcode path
-        shell: bash
         run: |
           set -e
 
           XCODE_VERSION=$(python3 -c 'import json; print(json.load(open("versions.json"))["xcode"])')
 
-          echo "Xcode version: $XCODE_VERSION"
+          echo "Using Xcode $XCODE_VERSION"
 
           sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
 
           xcodebuild -version
 
       - name: Create canonical source directory
-        shell: bash
         run: |
           set -e
 
@@ -136,12 +47,9 @@ jobs:
 
           cp -R "$GITHUB_WORKSPACE" /Users/Shared/
 
-          mv \
-            "/Users/Shared/$(basename "$GITHUB_WORKSPACE")" \
-            /Users/Shared/telegram-ios
+          mv "/Users/Shared/$(basename "$GITHUB_WORKSPACE")" /Users/Shared/telegram-ios
 
       - name: Build the App
-        shell: bash
         run: |
           set -e
           set -x
@@ -156,22 +64,19 @@ jobs:
           APP_VERSION="$(python3 -c 'import json; print(json.load(open("versions.json"))["app"])')"
 
           COMMIT_COUNT="$(git rev-list --count HEAD)"
-
           COMMIT_COUNT="$((COMMIT_COUNT + BUILD_NUMBER_OFFSET))"
-
           BUILD_NUMBER="$COMMIT_COUNT"
 
-          export APP_VERSION
-          export BUILD_NUMBER
-
-          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
 
           echo "APP_VERSION=$APP_VERSION"
           echo "BUILD_NUMBER=$BUILD_NUMBER"
 
           python3 build-system/Make/ImportCertificates.py \
             --path build-system/fake-codesigning/certs
+
+          python3 -m py_compile build-system/Make/Make.py
 
           python3 -u build-system/Make/Make.py \
             --bazelUserRoot="$BAZEL_USER_ROOT" \
